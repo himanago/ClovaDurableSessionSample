@@ -1,10 +1,13 @@
 ﻿using CEK.CSharp;
 using CEK.CSharp.Models;
+using DurableTask.Core;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace ClovaDurableSessionSample
@@ -22,7 +25,6 @@ namespace ClovaDurableSessionSample
             var clovaClient = new ClovaClient();
             var cekRequest = await clovaClient.GetRequest(req.Headers["SignatureCEK"], req.Body);
             var userId = cekRequest.Session.User.UserId;
-            //var sessionId = cekRequest.Session.SessionId;
 
             switch (cekRequest.Request.Type)
             {
@@ -151,6 +153,26 @@ namespace ClovaDurableSessionSample
             var time = 20000;
             await Task.Delay(time);
             return $"{(time / 1000).ToString()}秒待機成功";
+        }
+
+        /// <summary>
+        /// 実行履歴を削除するタイマー関数。1日1回、午前12時に実行されます。
+        /// </summary>
+        /// <param name="client"></param>
+        /// <param name="myTimer"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(HistoryCleanerFunction))]
+        public static Task HistoryCleanerFunction(
+            [OrchestrationClient] DurableOrchestrationClient client,
+            [TimerTrigger("0 0 12 * * *")]TimerInfo myTimer)
+        {
+            return client.PurgeInstanceHistoryAsync(
+                DateTime.MinValue,
+                DateTime.UtcNow.AddDays(-1),
+                new List<OrchestrationStatus>
+                {
+                    OrchestrationStatus.Completed
+                });
         }
     }
 }
