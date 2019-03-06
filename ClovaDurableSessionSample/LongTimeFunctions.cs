@@ -1,13 +1,13 @@
 ﻿using CEK.CSharp;
 using CEK.CSharp.Models;
+using DurableTask.Core;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace ClovaDurableSessionSample
@@ -22,76 +22,75 @@ namespace ClovaDurableSessionSample
             ILogger log)
         {
             var cekResponse = new CEKResponse();
+            var clovaClient = new ClovaClient();
+            var cekRequest = await clovaClient.GetRequest(req.Headers["SignatureCEK"], req.Body);
+            var userId = cekRequest.Session.User.UserId;
 
-            // オーディオ系イベントではリクエスト形式が異なるのでJSONデータを直接確認する
-            var reqJson = JObject.Parse(await req.ReadAsStringAsync());
-            var reqObj = reqJson["request"];
-            if (reqObj["type"].Value<string>() != "EventRequest")
+            switch (cekRequest.Request.Type)
             {
-                var clovaClient = new ClovaClient();
-                var cekRequest = await clovaClient.GetRequest(req.Headers["SignatureCEK"], req.Body);
-                switch (cekRequest.Request.Type)
-                {
-                    case RequestType.LaunchRequest:
-                        {
-                            // UserId をインスタンス ID として新しい関数を実行
-                            await client.StartNewAsync(nameof(LongTimeOrchestrationFunction), cekRequest.Session.User.UserId, null);
-                            cekResponse.AddText("時間のかかる処理を実行しました。少々お待ちください。");
-
-                            // 無音無限ループに入る
-                            KeepClovaWaiting(cekResponse);
-                            break;
-                        }
-                    case RequestType.IntentRequest:
-                        {
-                            // インテントリクエストは特に用意しない
-                            cekResponse.AddText("すみません。よくわかりませんでした。");
-                            break;
-                        }
-                    case RequestType.SessionEndedRequest:
-                        {
-                            // スキル終了の場合は処理もキャンセル
-                            await client.TerminateAsync(cekRequest.Session.User.UserId, "Cancel");
-                            break;
-                        }
-                }
-            }
-            else
-            {
-                // オーディオイベントの制御
-                // Clovaでのオーディオ再生が終わった際に呼び出される
-                if (reqObj["event"]["namespace"].Value<string>() == "AudioPlayer")
-                {
-                    var userId = reqJson["session"]["user"]["userId"].Value<string>();
-                    var eventName = reqObj["event"]["name"].Value<string>();
-
-                    if (eventName == "PlayFinished")
+                case RequestType.LaunchRequest:
                     {
-                        var status = await client.GetStatusAsync(userId);
+                        // sessionId をインスタンス ID として新しい関数を実行
+                        await client.StartNewAsync(nameof(LongTimeOrchestrationFunction), userId, null);
+                        cekResponse.AddText("時間のかかる処理を実行しました。少々お待ちください。");
 
-                        // 終わっていなければ無音再生リクエストを繰り返す
-                        if (status.RuntimeStatus == OrchestrationRuntimeStatus.ContinuedAsNew ||
-                            status.RuntimeStatus == OrchestrationRuntimeStatus.Pending ||
-                            status.RuntimeStatus == OrchestrationRuntimeStatus.Running)
-                        {
-                            KeepClovaWaiting(cekResponse);
-                            cekResponse.ShouldEndSession = false;
-                        }
-                        else if (status.RuntimeStatus == OrchestrationRuntimeStatus.Completed)
-                        {
-                            // 終了していたら結果をしゃべって終了
-                            cekResponse.AddText($"終わりました。結果は{status.Output.ToObject<string>()}です。");
-                        }
+                        // 無音無限ループに入る
+                        KeepClovaWaiting(cekResponse);
+                        break;
                     }
-                    else if (eventName == "PlayStopped")
+                case RequestType.IntentRequest:
                     {
+                        // インテントリクエストは特に用意しない
+                        cekResponse.AddText("すみません。よくわかりませんでした。");
+                        break;
+                    }
+                case RequestType.EventRequest:
+                    {
+                        // オーディオイベントの制御
+                        // Clovaでのオーディオ再生が終わった際に呼び出される
+                        if (cekRequest.Request.Event.Namespace == "AudioPlayer")
+                        {
+                            if (cekRequest.Request.Event.Name == "PlayFinished")
+                            {
+                                var status = await client.GetStatusAsync(userId);
+
+                                log.LogInformation(status.RuntimeStatus.ToString());
+
+                                // 終わっていなければ無音再生リクエストを繰り返す
+                                if (status.RuntimeStatus == OrchestrationRuntimeStatus.ContinuedAsNew ||
+                                    status.RuntimeStatus == OrchestrationRuntimeStatus.Pending ||
+                                    status.RuntimeStatus == OrchestrationRuntimeStatus.Running)
+                                {
+                                    KeepClovaWaiting(cekResponse);
+                                    cekResponse.ShouldEndSession = false;
+                                }
+                                else if (status.RuntimeStatus == OrchestrationRuntimeStatus.Completed)
+                                {
+                                    // 終了していたら結果をしゃべって終了
+                                    cekResponse.AddText($"終わりました。結果は{status.Output.ToObject<string>()}です。");
+                                }
+                                else if (status.RuntimeStatus == OrchestrationRuntimeStatus.Failed)
+                                {
+                                    // 失敗していたら結果をしゃべって終了
+                                    cekResponse.AddText("失敗しました。");
+                                }
+                            }
+                            else if (cekRequest.Request.Event.Name == "PlayStopped")
+                            {
+                                await client.TerminateAsync(userId, "Cancel");
+                            }
+                        }
+                        break;
+                    }
+                case RequestType.SessionEndedRequest:
+                    {
+                        // スキル終了の場合は処理もキャンセル
                         await client.TerminateAsync(userId, "Cancel");
+                        break;
                     }
-                }
             }
 
-            // AudioPlayer利用時はCEK.CSharpのJSON変換がうまくいかないので自前で変換して返す
-            return new OkObjectResult(JsonConvert.SerializeObject(cekResponse));
+            return new OkObjectResult(cekResponse);
         }
 
         /// <summary>
@@ -108,15 +107,15 @@ namespace ClovaDurableSessionSample
                     Namespace = DirectiveHeaderNamespace.AudioPlayer,
                     Name = DirectiveHeaderName.Play
                 },
-                // CEK.CSharpのModelは対応していないため、自前で用意したModelクラスを使用
-                Payload = new AudioPayload
+                Payload = new AudioPlayPayload
                 {
                     AudioItem = new AudioItem
                     {
                         AudioItemId = "silent-audio",
-                        Title = "待機中",
-                        Artist = "Durable Functions",
-                        Stream = new Stream
+                        TitleText = "Durable Session Sample",
+                        TitleSubText1 = "Azure Functions",
+                        TitleSubText2 = "Durable Functions",
+                        Stream = new AudioStreamInfoObject
                         {
                             BeginAtInMilliseconds = 0,
                             ProgressReport = new ProgressReport
@@ -129,7 +128,11 @@ namespace ClovaDurableSessionSample
                             UrlPlayable = true
                         }
                     },
-                    PlayBehavior = "REPLACE_ALL"
+                    PlayBehavior = AudioPlayBehavior.REPLACE_ALL,
+                    Source = new Source
+                    {
+                        Name = "Microsoft Azure"
+                    }
                 }
             });
         }
@@ -146,10 +149,30 @@ namespace ClovaDurableSessionSample
         public static async Task<string> LongTimeActivityFunction(
             [ActivityTrigger] DurableActivityContext context)
         {
-            // 時間のかかる処理（60秒待つだけ）
-            var time = 60000;
+            // 時間のかかる処理（20秒待つだけ）
+            var time = 20000;
             await Task.Delay(time);
             return $"{(time / 1000).ToString()}秒待機成功";
+        }
+
+        /// <summary>
+        /// 実行履歴を削除するタイマー関数。1日1回、午前12時に実行されます。
+        /// </summary>
+        /// <param name="client"></param>
+        /// <param name="myTimer"></param>
+        /// <returns></returns>
+        [FunctionName(nameof(HistoryCleanerFunction))]
+        public static Task HistoryCleanerFunction(
+            [OrchestrationClient] DurableOrchestrationClient client,
+            [TimerTrigger("0 0 12 * * *")]TimerInfo myTimer)
+        {
+            return client.PurgeInstanceHistoryAsync(
+                DateTime.MinValue,
+                DateTime.UtcNow.AddDays(-1),
+                new List<OrchestrationStatus>
+                {
+                    OrchestrationStatus.Completed
+                });
         }
     }
 }
