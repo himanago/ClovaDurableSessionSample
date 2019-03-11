@@ -4,13 +4,9 @@
     <AzureFunctionsVersion>v2</AzureFunctionsVersion>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="CEK.CSharp" Version="0.1.8" />
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.DurableTask" Version="1.7.1" />
     <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="1.0.24" />
-  </ItemGroup>
-  <ItemGroup>
-    <Reference Include="ClovaCEKCSharp">
-      <HintPath>..\..\clova-cek-sdk-csharp\clova-cek-sdk-csharp\bin\Debug\netstandard1.3\ClovaCEKCSharp.dll</HintPath>
-    </Reference>
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
